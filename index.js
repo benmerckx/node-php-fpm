@@ -95,13 +95,13 @@ module.exports = function(userOptions = {}, customParams = {}) {
       console.log(headers)
     }
 
-    const fail = err => {
-      if (!res.headersSent) res.writeHead(500)
-      res.end()
-      reject(err)
-    }
     const php = await fpm
     return new Promise(function(resolve, reject) {
+      const fail = err => {
+        if (!res.headersSent) res.writeHead(500)
+        res.end()
+        reject(err)
+      }
       php.request(headers, function(err, request) {
         if (err) return fail(err)
         
