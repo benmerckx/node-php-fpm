@@ -86,14 +86,13 @@ module.exports = function(userOptions = {}, customParams = {}) {
       }
     }
 
-    for (header in req.headers) {
-      headers['HTTP_' + header.toUpperCase().split('-').join('_')] =
-        req.headers[header]
-    }
+    const formatHeader = header =>
+      header.toUpperCase().split('-').join('_')
 
-    if (options.debug) {
-      console.log(headers)
-    }
+    for (header in req.headers)
+      headers['HTTP_' + formatHeader(header)] = req.headers[header]
+
+    if (options.debug) console.log(headers)
 
     const php = await fpm
     return new Promise(function(resolve, reject) {
@@ -104,44 +103,38 @@ module.exports = function(userOptions = {}, customParams = {}) {
       }
       php.request(headers, function(err, request) {
         if (err) return fail(err)
-        
+
+        const errors = []
         const parser = new HTTPParser(HTTPParser.RESPONSE)
         const parse = data => parser.execute(data)
-        const onHeaders = ({headers}) => {
-          let status = 200
-          for (let i = 0; i < headers.length; i += 2) {
-            const name = headers[i],
-              value = headers[i + 1]
-            if (name == 'Status') {
-              status = parseInt(value.split(' ')[0], 10)
-              continue
-            }
-            const exists = res.getHeader(name)
-            const header = exists ? [].concat(exists).concat(value) : value
-            res.setHeader(name, header)
-          }
-          res.writeHead(status)
+        const headerValue = (name, value) => {
+          const exists = res.getHeader(name)
+          return exists ? [].concat(exists).concat(value) : value
         }
-        const onBody = (chunk, offset, length) => 
+        const setHeader = (name, value) => {
+          if (name == 'Status')
+            res.statusCode = parseInt(value.split(' ')[0], 10)
+          else res.setHeader(name, headerValue(name, value))
+        }
+        const writeHead = ({headers}) => {
+          while (headers.length) setHeader(headers.shift(), headers.shift())
+        }
+        const writeBody = (chunk, offset, length) =>
           res.write(chunk.slice(offset, offset + length))
+        const getErrors = () =>
+          new Error(Buffer.concat(errors).toString('utf8'))
+        const finish = () => {
+          if (errors.length) fail(getErrors())
+          else resolve(res.end())
+        }
 
-        // Skip to header parsing as fcgi does not return a response line
         parser.state = 'HEADER'
-        parser[HTTPParser.kOnHeadersComplete] = onHeaders
-        parser[HTTPParser.kOnBody] = onBody
-
-        let errors = ''
-        request.stderr.on('data', data => (errors += data.toString('utf8')))
+        parser[HTTPParser.kOnHeadersComplete] = writeHead
+        parser[HTTPParser.kOnBody] = writeBody
+        request.stderr.on('data', errors.push)
         request.stdout.on('data', parse)
+        request.stdout.on('end', finish)
         req.pipe(request.stdin)
-
-        request.stdout.on('end', function() {
-          parser.finish()
-          parser.close()
-          if (errors) return fail(new Error(errors))
-          res.end()
-          resolve()
-        })
       })
     })
   }
